@@ -36,30 +36,32 @@ const cartSlice = createSlice({
       const id = action.payload;
       const existingItem = state.items.find(item => item.id === id);
       
-      state.totalQuantity--;
-      
-      if (existingItem.quantity === 1) {
-        // Jika kuantitas sisa 1, hapus item dari array
-        state.items = state.items.filter(item => item.id !== id);
-      } else {
-        // Jika lebih dari 1, kurangi kuantitasnya
-        existingItem.quantity--;
-        existingItem.totalPrice = existingItem.totalPrice - existingItem.price;
+      if (existingItem) {
+        state.totalQuantity--;
+        if (existingItem.quantity === 1) {
+          state.items = state.items.filter(item => item.id !== id);
+        } else {
+          existingItem.quantity--;
+          existingItem.totalPrice = existingItem.totalPrice - existingItem.price;
+        }
       }
     },
     // Aksi untuk menghapus item sepenuhnya dari keranjang
     deleteItemFromCart(state, action) {
-        const id = action.payload;
-        const existingItem = state.items.find(item => item.id === id);
-        if (existingItem) {
-            // Kurangi total kuantitas sesuai jumlah item yang dihapus
-            state.totalQuantity = state.totalQuantity - existingItem.quantity;
-            // Filter untuk menghapus item
-            state.items = state.items.filter(item => item.id !== id);
-        }
+      const id = action.payload;
+      const existingItem = state.items.find(item => item.id === id);
+      if (existingItem) {
+        state.totalQuantity = state.totalQuantity - existingItem.quantity;
+        state.items = state.items.filter(item => item.id !== id);
+      }
+    },
+    // Aksi untuk mengosongkan keranjang setelah checkout berhasil
+    clearCart(state) {
+      state.items = [];
+      state.totalQuantity = 0;
     }
   },
 });
 
-export const { addItemToCart, removeItemFromCart, deleteItemFromCart } = cartSlice.actions;
+export const { addItemToCart, removeItemFromCart, deleteItemFromCart, clearCart } = cartSlice.actions;
 export default cartSlice.reducer;
