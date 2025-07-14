@@ -1,110 +1,147 @@
-// src/pages/CheckoutPage.jsx
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
-import { Container, Grid, Paper, Typography, TextField, Box, Button, Divider, CircularProgress, Alert } from '@mui/material';
+import {
+  Container, Grid, Paper, Typography, TextField, Box, Button, Divider,
+  CircularProgress, Alert, Stack, FormControl, InputLabel, Select, MenuItem
+} from '@mui/material';
 import axios from 'axios';
 import { db } from '../firebase';
-import { addDoc, collection } from 'firebase/firestore';
+import { collection, doc, setDoc, getDocs, serverTimestamp } from 'firebase/firestore';
 import { clearCart } from '../store/cartSlice';
+import { useSnackbar } from 'notistack';
+
+const BACKEND_URL = "http://localhost:3001";
 
 function CheckoutPage() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const cartItems = useSelector(state => state.cart.items);
   const user = useSelector(state => state.user.user);
-  
-  const subtotal = cartItems.reduce((sum, item) => sum + item.totalPrice, 0);
-  const shippingCost = 5000;
-  const total = subtotal + shippingCost;
+  const { enqueueSnackbar } = useSnackbar();
 
   const [formData, setFormData] = useState({
-    email: user?.email || '',
-    firstName: user?.displayName?.split(' ')[0] || '',
-    lastName: user?.displayName?.split(' ')[1] || '',
-    address: '',
-    city: '',
-    postalCode: '',
-    phone: '',
+    email: '', recipientName: '', phoneNumber: '', fullAddress: '',
   });
-
+  const [savedAddresses, setSavedAddresses] = useState([]);
+  const [selectedAddressId, setSelectedAddressId] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+  const subtotal = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  const shippingCost = 10000;
+  const total = subtotal + shippingCost;
+
+  useEffect(() => {
+    if (user) {
+      setFormData(prev => ({
+        ...prev, email: user.email || '', recipientName: user.displayName || ''
+      }));
+      const fetchAddresses = async () => {
+        try {
+          const addressRef = collection(db, 'users', user.uid, 'addresses');
+          const qSnapshot = await getDocs(addressRef);
+          setSavedAddresses(qSnapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+        } catch (err) {
+          console.error("Gagal mengambil alamat:", err);
+        }
+      };
+      fetchAddresses();
+    }
+  }, [user]);
+
+  const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+  
+  const handleAddressSelect = (e) => {
+    const { value } = e.target;
+    setSelectedAddressId(value);
+    if (value === 'new') {
+      setFormData({
+        email: user.email || '', recipientName: user.displayName || '', phoneNumber: '', fullAddress: '',
+      });
+    } else {
+      const selected = savedAddresses.find(addr => addr.id === value);
+      if (selected) {
+        setFormData(prev => ({
+          ...prev,
+          recipientName: selected.recipientName,
+          phoneNumber: selected.phoneNumber,
+          fullAddress: selected.fullAddress,
+        }));
+      }
+    }
   };
 
-  // Semua logika pembayaran sekarang ada di dalam fungsi ini
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsLoading(true);
     setError('');
 
-    // Pengecekan penting sebelum melanjutkan
-    if (!user) {
-        setError("Anda harus login untuk melanjutkan pembayaran.");
-        setIsLoading(false);
-        return;
-    }
-    if (cartItems.length === 0) {
-        setError("Keranjang Anda kosong.");
-        setIsLoading(false);
-        return;
+    if (!user || cartItems.length === 0) {
+      setError("Please login and ensure your cart is not empty.");
+      setIsLoading(false);
+      return;
     }
 
-    const transactionDetails = {
-      orderId: `SMYVA-${Date.now()}`,
-      total: total,
-      items: cartItems.map(item => ({
-        id: item.id,
-        price: item.price,
-        quantity: item.quantity,
-        name: item.name,
-      })),
-      customerDetails: {
-        first_name: formData.firstName,
-        last_name: formData.lastName,
+    const orderId = `SMYVA-${Date.now()}`;
+    const [firstName, ...lastName] = formData.recipientName.split(' ');
+    
+    // ## PERBAIKAN KUNCI ADA DI SINI ##
+    // Struktur payload disesuaikan dengan kebutuhan API Midtrans
+    const transactionPayload = {
+      transaction_details: {
+        order_id: orderId,
+        gross_amount: total,
+      },
+      item_details: [
+        ...cartItems.map(item => ({
+          id: item.id,
+          price: item.price,
+          quantity: item.quantity,
+          name: item.name
+        })),
+        {
+          id: 'SHIPPING_COST',
+          price: shippingCost,
+          quantity: 1,
+          name: 'Shipping Cost'
+        }
+      ],
+      customer_details: {
+        first_name: firstName,
+        last_name: lastName.join(' '),
         email: formData.email,
-        phone: formData.phone,
+        phone: formData.phoneNumber,
         billing_address: {
-          address: formData.address,
-          city: formData.city,
-          postal_code: formData.postalCode,
+          address: formData.fullAddress,
+          city: '', // Bisa dikosongkan atau diisi jika ada datanya
+          postal_code: '', // Bisa dikosongkan atau diisi jika ada datanya
         }
       },
     };
 
     try {
-      const response = await axios.post('/api/create-transaction', transactionDetails);
-      const { token } = response.data;
-
-      window.snap.pay(token, {
-        onSuccess: async (result) => {
-          await addDoc(collection(db, 'orders'), {
-            userId: user.uid,
-            ...transactionDetails,
-            paymentResult: result,
-            status: 'processing',
-            createdAt: new Date(),
-          });
-          dispatch(clearCart());
-          alert("Pembayaran berhasil!");
-          navigate('/');
-        },
-        onPending: (result) => {
-          alert("Menunggu pembayaran Anda.");
-        },
-        onError: (err) => {
-          setError(err.message || "Terjadi kesalahan saat pembayaran.");
-        },
-        onClose: () => {
-          console.log('Jendela pembayaran ditutup oleh pengguna.');
-        }
+      await setDoc(doc(db, 'orders', orderId), {
+        userId: user.uid,
+        customerDetails: transactionPayload.customer_details,
+        items: transactionPayload.item_details,
+        totalAmount: total,
+        orderId: orderId,
+        status: 'pending',
+        createdAt: serverTimestamp(),
       });
 
+      const response = await axios.post(`${BACKEND_URL}/create-transaction`, transactionPayload);
+      const { token } = response.data;
+      
+      window.snap.pay(token, {
+        onSuccess: (result) => { dispatch(clearCart()); navigate(`/order-success/${result.order_id}`); },
+        onPending: (result) => { dispatch(clearCart()); navigate(`/order-success/${result.order_id}`); },
+        onError: (err) => setError(err.message || "Payment error occurred."),
+        onClose: () => enqueueSnackbar('You closed the payment window before finishing.', { variant: 'warning' })
+      });
     } catch (err) {
-      setError(err.response?.data?.error || 'Gagal membuat transaksi. Silakan coba lagi.');
+      setError(err.response?.data?.error || 'Failed to process the order.');
     } finally {
       setIsLoading(false);
     }
@@ -114,23 +151,29 @@ function CheckoutPage() {
     <Container sx={{ my: 5 }}>
       <Typography variant="h4" fontWeight="bold" gutterBottom>Checkout</Typography>
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-      <Grid container spacing={5}>
-        <Grid item xs={12} md={7}>
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={5}>
+        <Box sx={{ width: { xs: '100%', md: '60%' } }}>
           <Typography variant="h6" gutterBottom>Shipping Address</Typography>
+          {user && savedAddresses.length > 0 && (
+            <FormControl fullWidth sx={{ mb: 2 }}>
+              <InputLabel id="address-select-label">Choose a saved address</InputLabel>
+              <Select labelId="address-select-label" value={selectedAddressId} label="Choose a saved address" onChange={handleAddressSelect}>
+                <MenuItem value="new"><em>-- Add a new address --</em></MenuItem>
+                {savedAddresses.map(addr => (<MenuItem key={addr.id} value={addr.id}>{addr.label} - {addr.recipientName}</MenuItem>))}
+              </Select>
+            </FormControl>
+          )}
           <Box component="form" id="checkout-form" onSubmit={handleSubmit} noValidate sx={{ mt: 1 }}>
             <Grid container spacing={2}>
+              <Grid item xs={12}><TextField required fullWidth label="Recipient Name" name="recipientName" value={formData.recipientName} onChange={handleChange} /></Grid>
               <Grid item xs={12}><TextField required fullWidth label="Email Address" name="email" value={formData.email} onChange={handleChange} /></Grid>
-              <Grid item xs={12} sm={6}><TextField required fullWidth label="First Name" name="firstName" value={formData.firstName} onChange={handleChange} /></Grid>
-              <Grid item xs={12} sm={6}><TextField required fullWidth label="Last Name" name="lastName" value={formData.lastName} onChange={handleChange} /></Grid>
-              <Grid item xs={12}><TextField required fullWidth label="Address" name="address" value={formData.address} onChange={handleChange} /></Grid>
-              <Grid item xs={12} sm={6}><TextField required fullWidth label="City" name="city" value={formData.city} onChange={handleChange} /></Grid>
-              <Grid item xs={12} sm={6}><TextField required fullWidth label="Postal Code" name="postalCode" value={formData.postalCode} onChange={handleChange} /></Grid>
-              <Grid item xs={12}><TextField required fullWidth label="Phone Number" name="phone" value={formData.phone} onChange={handleChange} /></Grid>
+              <Grid item xs={12}><TextField required fullWidth label="Phone Number" name="phoneNumber" value={formData.phoneNumber} onChange={handleChange} /></Grid>
+              <Grid item xs={12}><TextField required fullWidth label="Full Address" name="fullAddress" placeholder="Jalan, nomor, kecamatan, kota, dll." value={formData.fullAddress} onChange={handleChange} multiline rows={4} /></Grid>
             </Grid>
           </Box>
-        </Grid>
-        <Grid item xs={12} md={5}>
-          <Paper variant="outlined" sx={{ p: 3, borderRadius: 3 }}>
+        </Box>
+        <Box sx={{ width: { xs: '100%', md: '40%' } }}>
+          <Paper variant="outlined" sx={{ p: 3, borderRadius: 3, position: 'sticky', top: '100px' }}>
             <Typography variant="h6" gutterBottom>Order Summary</Typography>
             {cartItems.map(item => (
               <Box key={item.id} sx={{ display: 'flex', justifyContent: 'space-between', my: 1 }}>
@@ -143,20 +186,12 @@ function CheckoutPage() {
             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}><Typography>Shipping</Typography><Typography>Rp {shippingCost.toLocaleString('id-ID')}</Typography></Box>
             <Divider sx={{ my: 2 }} />
             <Box sx={{ display: 'flex', justifyContent: 'space-between' }}><Typography variant="h6" fontWeight="bold">Total</Typography><Typography variant="h6" fontWeight="bold">Rp {total.toLocaleString('id-ID')}</Typography></Box>
-            <Button
-              type="submit"
-              form="checkout-form"
-              variant="contained"
-              fullWidth
-              size="large"
-              sx={{ mt: 3 }}
-              disabled={isLoading || cartItems.length === 0}
-            >
+            <Button type="submit" form="checkout-form" variant="contained" fullWidth size="large" sx={{ mt: 3 }} disabled={isLoading || cartItems.length === 0}>
               {isLoading ? <CircularProgress size={24} color="inherit" /> : 'Proceed to Payment'}
             </Button>
           </Paper>
-        </Grid>
-      </Grid>
+        </Box>
+      </Stack>
     </Container>
   );
 }

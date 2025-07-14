@@ -2,7 +2,8 @@
 import { createSlice } from '@reduxjs/toolkit';
 
 const initialState = {
-  user: null, // Awalnya tidak ada pengguna yang login
+  user: null,
+  status: 'loading', // 'loading', 'success', 'failed'
 };
 
 const userSlice = createSlice({
@@ -12,13 +13,19 @@ const userSlice = createSlice({
     // Aksi untuk menyimpan data pengguna saat login
     login(state, action) {
       state.user = action.payload;
+      state.status = 'success';
     },
     // Aksi untuk menghapus data pengguna saat logout
     logout(state) {
       state.user = null;
+      state.status = 'success';
     },
+    // Aksi untuk menandai bahwa status otentikasi sedang diperiksa
+    setLoading(state) {
+      state.status = 'loading';
+    }
   },
 });
 
-export const { login, logout } = userSlice.actions;
+export const { login, logout, setLoading } = userSlice.actions;
 export default userSlice.reducer;
